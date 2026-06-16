@@ -208,6 +208,11 @@ io.on('connection', (socket) => {
     if (targetSocket) io.to(targetSocket).emit('call_ended');
   });
 
+  socket.on('call_ping', (data) => {
+    const targetSocket = onlineSockets[data.to];
+    if (targetSocket) io.to(targetSocket).emit('call_ping');
+  });
+
   socket.on('disconnect', () => {
     const username = Object.keys(onlineSockets).find(u => onlineSockets[u] === socket.id);
     if (username) {
