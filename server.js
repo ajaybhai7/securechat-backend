@@ -4,10 +4,30 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
+// Serve uploaded files statically
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Multer Storage Configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadPath = path.join(__dirname, 'uploads');
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath, { recursive: true });
+    }
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
+  }
+});
+const upload = multer({ storage });
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
@@ -47,6 +67,26 @@ function broadcastGroups() {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── FILE UPLOAD ROUTE ────────────────────────────────────────────────────────
+app.post('/api/upload', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+  res.json({ fileUrl, fileName: req.file.originalname });
+});
+
+// ─── MESSAGES HISTORY ROUTE ──────────────────────────────────────────────────
+app.get('/api/messages', (req, res) => {
+  const { username } = req.query;
+  if (!username) return res.status(400).json({ error: 'Username required' });
+  const userGroups = db.groups.filter(g => g.members.includes(username)).map(g => g.id);
+  const relevant = db.messages.filter(m => 
+    m.sender === username || 
+    m.receiver === username || 
+    (m.isGroup && userGroups.includes(m.receiver))
+  );
+  res.json(relevant);
+});
+
 // ─── AUTH ROUTES ─────────────────────────────────────────────────────────────
 app.post('/api/auth/register', (req, res) => {
   const { username, password, publicKey, inviteGroup } = req.body;
@@ -75,7 +115,7 @@ app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
   const user = db.users.find(u => u.username === username && u.password === password);
   if (!user) return res.status(401).json({ error: 'Invalid username or password!' });
-  res.json({ message: 'Login successful' });
+  res.json({ message: 'Login successful', publicKey: user.publicKey });
 });
 
 // ─── PROFILE ────────────────────────────────────────────────────────────────
@@ -156,6 +196,16 @@ io.on('connection', (socket) => {
   socket.on('answer_call', (data) => {
     const targetSocket = onlineSockets[data.to];
     if (targetSocket) io.to(targetSocket).emit('call_accepted', data.signal);
+  });
+
+  socket.on('ice_candidate', (data) => {
+    const targetSocket = onlineSockets[data.to];
+    if (targetSocket) io.to(targetSocket).emit('ice_candidate', { candidate: data.candidate, from: data.from });
+  });
+
+  socket.on('end_call', (data) => {
+    const targetSocket = onlineSockets[data.to];
+    if (targetSocket) io.to(targetSocket).emit('call_ended');
   });
 
   socket.on('disconnect', () => {
